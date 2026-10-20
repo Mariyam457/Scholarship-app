@@ -33,18 +33,24 @@ export async function listScholarships(req, res, next) {
     }
 
     // Host countries filter
-    if (hostCountries && hostCountries.length > 0) {
-      query.hostCountries = { $in: hostCountries.map((c) => c.toUpperCase()) };
+    const rawCountries = hostCountries || req.query.hostCountry;
+    if (rawCountries) {
+      const arr = Array.isArray(rawCountries) ? rawCountries : [rawCountries];
+      query.hostCountries = { $in: arr.map((c) => String(c).toUpperCase()) };
     }
 
     // Degree levels filter
-    if (degreeLevels && degreeLevels.length > 0) {
-      query.degreeLevels = { $in: degreeLevels };
+    const rawDegreeLevels = degreeLevels || req.query.degreeLevel;
+    if (rawDegreeLevels) {
+      const arr = Array.isArray(rawDegreeLevels) ? rawDegreeLevels : [rawDegreeLevels];
+      query.degreeLevels = { $in: arr };
     }
 
     // Funding types filter
-    if (fundingTypes && fundingTypes.length > 0) {
-      query.fundingType = { $in: fundingTypes };
+    const rawFundingTypes = fundingTypes || req.query.fundingType;
+    if (rawFundingTypes) {
+      const arr = Array.isArray(rawFundingTypes) ? rawFundingTypes : [rawFundingTypes];
+      query.fundingType = { $in: arr };
     }
 
     // Fields of study filter
