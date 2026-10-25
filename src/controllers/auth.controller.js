@@ -2,6 +2,7 @@ import { UserModel } from '../models/User.js';
 import { ApiError } from '../utils/api-error.js';
 import { hashPassword, verifyPassword, generateTokens, hashRefreshToken } from '../services/auth.service.js';
 import { logAuditEvent } from '../services/audit.service.js';
+import { sendPasswordResetEmail } from '../services/email.service.js';
 import { UserRole } from '../constants/enums.js';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
@@ -251,3 +252,95 @@ export async function toggleSaveScholarship(req, res, next) {
     next(error);
   }
 }
+
+export async function forgotPassword(req, res, next) {
+  try {
+    const { email } = req.body;
+    const user = await UserModel.findOne({ email });
+
+    // For privacy/security, even if user doesn't exist, return a generic message,
+    // but if user exists, generate OTP and dispatch email
+    if (!user) {
+      return res.json({
+        success: true,
+        message: 'If an account exists with this email, a 6-digit password reset code has been sent.',
+      });
+    }
+
+    // Generate 6-digit numeric OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.resetPasswordOtp = otp;
+    user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+    await user.save();
+
+    const mailResult = await sendPasswordResetEmail({
+      to: user.email,
+      otp,
+      userName: user.profile?.fullName || 'Scholar',
+    });
+
+    await logAuditEvent({
+      actorId: user._id,
+      actorEmail: user.email,
+      actorRole: user.role,
+      action: 'PASSWORD_RESET_REQUESTED',
+      entityType: 'User',
+      entityId: user._id.toString(),
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    res.json({
+      success: true,
+      message: mailResult?.delivered
+        ? 'A 6-digit verification code has been sent to your email address.'
+        : 'Development Mode: Verification code generated and logged in terminal.',
+      devOtp: !mailResult?.delivered ? otp : undefined,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function resetPassword(req, res, next) {
+  try {
+    const { email, otp, newPassword } = req.body;
+    const user = await UserModel.findOne({ email });
+
+    if (
+      !user ||
+      !user.resetPasswordOtp ||
+      user.resetPasswordOtp !== otp.trim() ||
+      !user.resetPasswordExpires ||
+      user.resetPasswordExpires < new Date()
+    ) {
+      return next(ApiError.badRequest('Invalid or expired password reset verification code.'));
+    }
+
+    // Hash and update password
+    user.passwordHash = await hashPassword(newPassword);
+    user.resetPasswordOtp = undefined;
+    user.resetPasswordExpires = undefined;
+    user.refreshTokenHash = undefined; // Force re-login on all devices
+    await user.save();
+
+    await logAuditEvent({
+      actorId: user._id,
+      actorEmail: user.email,
+      actorRole: user.role,
+      action: 'PASSWORD_RESET_COMPLETED',
+      entityType: 'User',
+      entityId: user._id.toString(),
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    res.json({
+      success: true,
+      message: 'Your password has been reset successfully. You can now log in with your new password.',
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+

@@ -45,3 +45,18 @@ export const updateProfileSchema = z.object({
     .optional(),
   onboardingCompleted: z.boolean().optional(),
 });
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email('Please provide a valid email address').trim().toLowerCase(),
+});
+
+export const resetPasswordSchema = z.object({
+  email: z.string().email('Please provide a valid email address').trim().toLowerCase(),
+  otp: z.string().min(4, 'OTP must be at least 4 digits').max(10, 'Invalid OTP length').trim(),
+  newPassword: z
+    .string()
+    .min(8, 'New password must be at least 8 characters')
+    .max(128)
+    .regex(/[A-Z]/, 'Must contain at least one uppercase letter')
+    .regex(/[0-9]/, 'Must contain at least one number'),
+});

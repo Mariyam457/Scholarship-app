@@ -60,6 +60,8 @@ const UserSchema = new mongoose.Schema(
     isEmailVerified: { type: Boolean, default: false },
     savedScholarships: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Scholarship' }],
     refreshTokenHash: { type: String },
+    resetPasswordOtp: { type: String },
+    resetPasswordExpires: { type: Date },
     lastLoginAt: { type: Date },
   },
   {

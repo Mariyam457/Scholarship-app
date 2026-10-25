@@ -34,6 +34,12 @@ const envSchema = z.object({
   USER_AGENT: z.string().default('ScholarPath-Bot/1.0 (+https://scholarpath.internal/bot; verification-research@scholarpath.internal)'),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']).default('debug'),
   LOG_FORMAT: z.enum(['pretty', 'json']).default('pretty'),
+  SMTP_HOST: z.string().default(''),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_SECURE: z.string().transform((v) => v === 'true').default('false'),
+  SMTP_USER: z.string().default(''),
+  SMTP_PASS: z.string().default(''),
+  SMTP_FROM: z.string().default('ScholarBeacon <no-reply@scholarbeacon.org>'),
 });
 
 const parsed = envSchema.safeParse(process.env);
