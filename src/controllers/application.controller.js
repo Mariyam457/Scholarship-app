@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { ApplicationTrackerModel } from '../models/ApplicationTracker.js';
 import { ScholarshipModel } from '../models/Scholarship.js';
 import { ApiError } from '../utils/api-error.js';
@@ -31,18 +32,28 @@ export async function trackScholarship(req, res, next) {
   try {
     const { scholarshipId, status = ApplicationStatus.SAVED, notes = '', checklist = [] } = req.body;
 
-    const scholarship = await ScholarshipModel.findById(scholarshipId);
+    let scholarship = null;
+    if (mongoose.isValidObjectId(scholarshipId)) {
+      scholarship = await ScholarshipModel.findById(scholarshipId);
+    }
+    if (!scholarship) {
+      scholarship = await ScholarshipModel.findOne({ slug: scholarshipId });
+    }
     if (!scholarship) {
       return next(ApiError.notFound('Scholarship not found'));
     }
 
     const existing = await ApplicationTrackerModel.findOne({
       userId: req.user.id,
-      scholarshipId,
+      scholarshipId: scholarship._id,
     });
 
     if (existing) {
-      return next(ApiError.conflict('You are already tracking this scholarship in your applications'));
+      return res.status(200).json({
+        success: true,
+        message: 'Scholarship is already in your application tracker',
+        data: { application: existing, alreadyTracked: true },
+      });
     }
 
     // Default checklist if not provided
@@ -55,7 +66,7 @@ export async function trackScholarship(req, res, next) {
       scholarshipId: scholarship._id,
       scholarshipTitle: scholarship.title,
       provider: scholarship.provider,
-      deadline: scholarship.deadlines.applicationDeadline,
+      deadline: scholarship.deadlines?.applicationDeadline || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
       status,
       notes,
       checklist: tasks,
@@ -99,18 +110,33 @@ export async function updateApplication(req, res, next) {
 export async function removeApplication(req, res, next) {
   try {
     const { id } = req.params;
-    const application = await ApplicationTrackerModel.findOneAndDelete({
-      _id: id,
-      userId: req.user.id,
-    });
 
-    if (!application) {
-      return next(ApiError.notFound('Tracked application not found'));
+    let targetScholarshipId = null;
+    if (mongoose.isValidObjectId(id)) {
+      targetScholarshipId = id;
+    } else {
+      const scholarship = await ScholarshipModel.findOne({ slug: id });
+      if (scholarship) {
+        targetScholarshipId = scholarship._id;
+      }
     }
+
+    const orConditions = [
+      ...(mongoose.isValidObjectId(id) ? [{ _id: id }] : []),
+      ...(targetScholarshipId ? [{ scholarshipId: targetScholarshipId }] : []),
+    ];
+
+    const application = orConditions.length > 0
+      ? await ApplicationTrackerModel.findOneAndDelete({
+          userId: req.user.id,
+          $or: orConditions,
+        })
+      : null;
 
     res.json({
       success: true,
       message: 'Application removed from tracker',
+      data: { deleted: Boolean(application) },
     });
   } catch (error) {
     next(error);
