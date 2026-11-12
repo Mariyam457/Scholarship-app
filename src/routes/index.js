@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import authRoutes from './auth.routes.js';
 import scholarshipRoutes from './scholarship.routes.js';
 import applicationRoutes from './application.routes.js';
@@ -10,11 +11,13 @@ const router = Router();
 
 // Health check endpoint
 router.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
+  const dbConnected = mongoose.connection.readyState === 1;
+  res.status(dbConnected ? 200 : 503).json({
+    status: dbConnected ? 'healthy' : 'degraded',
+    database: dbConnected ? 'connected' : 'disconnected',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
-    service: 'ScholarPath Backend API (Pure JS)',
+    service: 'ScholarBeacon Backend API',
     version: '1.0.0',
   });
 });

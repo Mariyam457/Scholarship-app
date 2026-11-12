@@ -227,7 +227,7 @@ export async function toggleSaveScholarship(req, res, next) {
       return next(ApiError.notFound('User not found'));
     }
 
-    const index = user.savedScholarships.indexOf(scholarshipId);
+    const index = user.savedScholarships.findIndex((id) => id.toString() === scholarshipId);
     let isSaved = false;
 
     if (index > -1) {

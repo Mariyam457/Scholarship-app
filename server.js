@@ -7,9 +7,13 @@ import { connectDatabase, disconnectDatabase } from './src/config/database.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error.middleware.js';
 import { requestLogger } from './src/middleware/request-logger.middleware.js';
 import { apiLimiter } from './src/middleware/rate-limiter.middleware.js';
+import { startMonitorScheduler, stopMonitorScheduler } from './src/worker/monitor-scheduler.js';
 import apiRouter from './src/routes/index.js';
 
 const app = express();
+
+// Enable reverse proxy trust for cloud platforms (Render, Railway, Heroku, Cloudflare)
+app.set('trust proxy', 1);
 
 // Security headers
 app.use(
@@ -62,8 +66,14 @@ async function startServer() {
       logger.info(`✨ Environment: ${env.NODE_ENV}`);
     });
 
+    // Start background monitor scheduler if enabled
+    if (env.WORKER_ENABLED) {
+      startMonitorScheduler({ runImmediately: false });
+    }
+
     const shutdown = async (signal) => {
       logger.info(`Received ${signal}. Gracefully shutting down server...`);
+      stopMonitorScheduler();
       server.close(async () => {
         await disconnectDatabase();
         logger.info('HTTP server closed. Exiting process.');

@@ -12,7 +12,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  API_PORT: z.coerce.number().default(5000),
+  API_PORT: z.coerce.number().default(process.env.PORT ? Number(process.env.PORT) : 5000),
   API_HOST: z.string().default('0.0.0.0'),
   MONGODB_URI: z.string().default('mongodb://127.0.0.1:27017/scholarpath'),
   MONGODB_DB_NAME: z.string().default('scholarpath'),

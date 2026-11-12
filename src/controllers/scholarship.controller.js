@@ -58,21 +58,34 @@ export async function listScholarships(req, res, next) {
       query.fieldsOfStudy = { $in: fieldsOfStudy.map((f) => new RegExp(f, 'i')) };
     }
 
+    // Multi-criteria clauses (combining nationality and GPA filters cleanly)
+    const orClauses = [];
+
     // Nationality filter
     if (nationality) {
       const nat = nationality.toUpperCase();
-      query.$or = [
-        { 'eligibility.eligibleNationalities': 'ALL' },
-        { 'eligibility.eligibleNationalities': nat },
-      ];
+      orClauses.push({
+        $or: [
+          { 'eligibility.eligibleNationalities': 'ALL' },
+          { 'eligibility.eligibleNationalities': nat },
+        ],
+      });
     }
 
     // GPA filter (only scholarships whose minGpa is <= student's minGpa or not specified)
     if (typeof minGpa === 'number') {
-      query.$or = [
-        { 'eligibility.minGpa': { $exists: false } },
-        { 'eligibility.minGpa': { $lte: minGpa } },
-      ];
+      orClauses.push({
+        $or: [
+          { 'eligibility.minGpa': { $exists: false } },
+          { 'eligibility.minGpa': { $lte: minGpa } },
+        ],
+      });
+    }
+
+    if (orClauses.length === 1) {
+      query.$or = orClauses[0].$or;
+    } else if (orClauses.length > 1) {
+      query.$and = orClauses;
     }
 
     // Deadlines filter
