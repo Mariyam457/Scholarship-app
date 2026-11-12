@@ -22,8 +22,8 @@ export async function runSeed() {
 
   // 1. Bootstrap Admin User
   let admin = await UserModel.findOne({ email: env.ADMIN_BOOTSTRAP_EMAIL });
+  const passwordHash = await hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD);
   if (!admin) {
-    const passwordHash = await hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD);
     admin = await UserModel.create({
       email: env.ADMIN_BOOTSTRAP_EMAIL,
       passwordHash,
@@ -38,7 +38,10 @@ export async function runSeed() {
     });
     logger.info(`✅ Admin user seeded: ${admin.email}`);
   } else {
-    logger.info(`ℹ️ Admin user already exists: ${admin.email}`);
+    admin.passwordHash = passwordHash;
+    admin.role = UserRole.ADMIN;
+    await admin.save();
+    logger.info(`ℹ️ Admin user credentials updated: ${admin.email}`);
   }
 
   // 2. Official Sources Registry (23 Worldwide Monitored Bodies)
