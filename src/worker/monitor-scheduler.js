@@ -213,3 +213,4 @@ if (process.argv[1]?.endsWith('monitor-scheduler.js')) {
 
   runStandaloneWorker();
 }
+

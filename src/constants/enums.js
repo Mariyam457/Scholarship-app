@@ -7,6 +7,7 @@ export const DegreeLevel = Object.freeze({
   MASTERS: 'masters',
   PHD: 'phd',
   POSTDOC: 'postdoc',
+  INTERNSHIP: 'internship',
   CERTIFICATE: 'certificate',
   HIGH_SCHOOL: 'high_school',
   OTHER: 'other',
