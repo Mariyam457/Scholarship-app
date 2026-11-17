@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import mongoose from 'mongoose';
 import { env } from './src/config/env.js';
 import { logger } from './src/config/logger.js';
 import { connectDatabase, disconnectDatabase } from './src/config/database.js';
@@ -12,13 +13,13 @@ import apiRouter from './src/routes/index.js';
 
 const app = express();
 
-// Enable reverse proxy trust for cloud platforms (Render, Railway, Heroku, Cloudflare)
+// Enable reverse proxy trust for cloud platforms (Vercel, Render, Railway, Cloudflare)
 app.set('trust proxy', 1);
 
 // Security headers
 app.use(
   helmet({
-    contentSecurityPolicy: false, // Disabled for flexible API clients & dashboards
+    contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
   })
 );
@@ -28,8 +29,12 @@ const allowedOrigins = env.CORS_ORIGINS.split(',').map((o) => o.trim());
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow mobile apps, curl, Postman (no origin header)
-      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+      if (
+        !origin ||
+        allowedOrigins.includes('*') ||
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.vercel.app')
+      ) {
         return callback(null, true);
       }
       return callback(new Error(`CORS blocked origin: ${origin}`));
@@ -48,6 +53,31 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(requestLogger);
 app.use('/api', apiLimiter);
 
+// Ensure MongoDB connection is established on serverless cold starts (Vercel)
+app.use(async (_req, _res, next) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      await connectDatabase();
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Root & Top-Level Health Check (for Vercel root URL visits)
+app.get(['/', '/health'], (_req, res) => {
+  const dbReady = mongoose.connection.readyState === 1;
+  res.status(dbReady ? 200 : 503).json({
+    success: dbReady,
+    service: 'ScholarBeacon API',
+    status: dbReady ? 'healthy' : 'degraded',
+    database: dbReady ? 'connected' : 'disconnected',
+    apiBase: '/api/v1',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // API v1 root
 app.use('/api/v1', apiRouter);
 
@@ -55,7 +85,7 @@ app.use('/api/v1', apiRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// Server startup
+// Standalone server startup (skipped when imported by Vercel serverless runtime)
 async function startServer() {
   try {
     await connectDatabase();
@@ -66,7 +96,6 @@ async function startServer() {
       logger.info(`✨ Environment: ${env.NODE_ENV}`);
     });
 
-    // Start background monitor scheduler if enabled
     if (env.WORKER_ENABLED) {
       startMonitorScheduler({ runImmediately: false });
     }
@@ -80,7 +109,6 @@ async function startServer() {
         process.exit(0);
       });
 
-      // Force shutdown after 10s if dangling connections
       setTimeout(() => {
         logger.error('Force shutdown after timeout.');
         process.exit(1);
@@ -95,7 +123,8 @@ async function startServer() {
   }
 }
 
-// Start if invoked directly
-startServer();
+if (!process.env.VERCEL && process.env.NODE_ENV !== 'test') {
+  startServer();
+}
 
 export default app;

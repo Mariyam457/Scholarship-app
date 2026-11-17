@@ -3,8 +3,18 @@ import mongoose from 'mongoose';
 import { env } from './env.js';
 import { logger } from './logger.js';
 
+let cachedConnectionPromise = null;
+
 export async function connectDatabase() {
-  if (env.MONGODB_URI.startsWith('mongodb+srv://')) {
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
+
+  if (cachedConnectionPromise) {
+    return cachedConnectionPromise;
+  }
+
+  if (env.MONGODB_URI.startsWith('mongodb+srv://') && !process.env.VERCEL) {
     try {
       dns.setServers(['8.8.8.8', '1.1.1.1']);
     } catch {
@@ -18,29 +28,37 @@ export async function connectDatabase() {
     socketTimeoutMS: 45000,
   };
 
-  try {
-    const maskedUri = env.MONGODB_URI.replace(/\/\/[^@]+@/, '//***:***@');
-    logger.info(`Connecting to MongoDB at ${maskedUri}...`);
-    const conn = await mongoose.connect(env.MONGODB_URI, options);
-    logger.info(`✅ MongoDB Connected successfully: ${conn.connection.host}/${conn.connection.name}`);
+  const maskedUri = env.MONGODB_URI.replace(/\/\/[^@]+@/, '//***:***@');
+  logger.info(`Connecting to MongoDB at ${maskedUri}...`);
 
-    mongoose.connection.on('error', (err) => {
-      logger.error('MongoDB connection error:', err);
+  cachedConnectionPromise = mongoose
+    .connect(env.MONGODB_URI, options)
+    .then((conn) => {
+      logger.info(`✅ MongoDB Connected successfully: ${conn.connection.host}/${conn.connection.name}`);
+
+      mongoose.connection.on('error', (err) => {
+        logger.error('MongoDB connection error:', err);
+      });
+
+      mongoose.connection.on('disconnected', () => {
+        cachedConnectionPromise = null;
+        logger.warn('MongoDB disconnected. Attempting reconnect...');
+      });
+
+      return conn;
+    })
+    .catch((error) => {
+      cachedConnectionPromise = null;
+      logger.error('❌ Failed to connect to MongoDB:', error);
+      throw error;
     });
 
-    mongoose.connection.on('disconnected', () => {
-      logger.warn('MongoDB disconnected. Attempting reconnect...');
-    });
-
-    return conn;
-  } catch (error) {
-    logger.error('❌ Failed to connect to MongoDB:', error);
-    throw error;
-  }
+  return cachedConnectionPromise;
 }
 
 export async function disconnectDatabase() {
   try {
+    cachedConnectionPromise = null;
     await mongoose.disconnect();
     logger.info('MongoDB connection closed gracefully.');
   } catch (error) {

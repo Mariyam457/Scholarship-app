@@ -22,7 +22,7 @@ const envSchema = z.object({
   PASSWORD_SALT_ROUNDS: z.coerce.number().default(12),
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().default('scholar@email.com'),
   ADMIN_BOOTSTRAP_PASSWORD: z.string().min(8).default('scholar1234'),
-  CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:3000,http://localhost:8081,http://127.0.0.1:5173'),
+  CORS_ORIGINS: z.string().default('*'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(500),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().default(50),
