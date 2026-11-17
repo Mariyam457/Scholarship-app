@@ -1,11 +1,20 @@
+import dns from 'dns';
 import mongoose from 'mongoose';
 import { env } from './env.js';
 import { logger } from './logger.js';
 
 export async function connectDatabase() {
+  if (env.MONGODB_URI.startsWith('mongodb+srv://')) {
+    try {
+      dns.setServers(['8.8.8.8', '1.1.1.1']);
+    } catch {
+      // fallback to system resolver
+    }
+  }
+
   const options = {
     dbName: env.MONGODB_DB_NAME,
-    serverSelectionTimeoutMS: 5000,
+    serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
   };
 

@@ -109,7 +109,8 @@ const ScholarshipSchema = new mongoose.Schema(
 
 // Indexes for fast searching and multi-attribute filters
 ScholarshipSchema.index({ isActive: 1, verificationStatus: 1, 'deadlines.applicationDeadline': 1 });
-ScholarshipSchema.index({ hostCountries: 1, degreeLevels: 1, fundingType: 1 });
+ScholarshipSchema.index({ hostCountries: 1, fundingType: 1 });
+ScholarshipSchema.index({ degreeLevels: 1, fundingType: 1 });
 ScholarshipSchema.index(
   {
     title: 'text',
