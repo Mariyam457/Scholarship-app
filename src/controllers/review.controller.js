@@ -22,7 +22,7 @@ export async function listQueue(req, res, next) {
 
     res.json({
       success: true,
-      data: { items },
+      data: { items, reviews: items },
       meta: {
         page: Number(page),
         limit: Number(limit),
@@ -71,9 +71,28 @@ export async function approveChange(req, res, next) {
     // Apply proposed changes to scholarship
     if (item.scholarshipId) {
       const updateDoc = {};
+      let hasPlaceholderBrokenUrl = false;
+      let hasRealUrlUpdate = false;
+
       for (const change of item.proposedChanges) {
+        if (change.newValue === 'NEEDS_UPDATED_URL') {
+          hasPlaceholderBrokenUrl = true;
+          continue;
+        }
+        if (change.field === 'sourceAttribution.applicationUrl' || change.field === 'sourceAttribution.officialSourceUrl') {
+          hasRealUrlUpdate = true;
+        }
         updateDoc[change.field] = change.newValue;
       }
+
+      if (hasPlaceholderBrokenUrl) {
+        updateDoc['linkHealth.isBroken'] = true;
+      } else if (hasRealUrlUpdate) {
+        updateDoc['linkHealth.isBroken'] = false;
+        updateDoc['linkHealth.brokenReason'] = '';
+        updateDoc['linkHealth.lastCheckedAt'] = new Date();
+      }
+
       updateDoc['sourceAttribution.lastVerifiedAt'] = new Date();
       updateDoc['sourceAttribution.verificationMethod'] = 'human_approved_crawl';
 

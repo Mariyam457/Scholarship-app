@@ -4,20 +4,40 @@ export function parseFlexibleDate(dateInput) {
     return isNaN(dateInput.getTime()) ? null : dateInput;
   }
 
-  const cleaned = String(dateInput).trim();
-  const parsed = new Date(cleaned);
-  if (!isNaN(parsed.getTime())) {
-    return parsed;
+  let cleaned = String(dateInput).trim();
+  // Strip ordinal suffixes like 1st, 2nd, 3rd, 15th
+  cleaned = cleaned.replace(/(\d{1,2})(st|nd|rd|th)\b/gi, '$1');
+  // Remove leading words like "on ", "by "
+  cleaned = cleaned.replace(/^(?:on|by|before|until)\s+/i, '').trim();
+
+  // Handle DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY first (common on European/international scholarship portals)
+  const dmyMatch = cleaned.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (dmyMatch) {
+    const first = parseInt(dmyMatch[1], 10);
+    const second = parseInt(dmyMatch[2], 10);
+    const year = parseInt(dmyMatch[3], 10);
+    // If first > 12 it is definitely DD/MM/YYYY; default to DD/MM/YYYY unless second > 12
+    const day = second > 12 ? second : first;
+    const month = (second > 12 ? first : second) - 1;
+    if (month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+      const d = new Date(Date.UTC(year, month, day));
+      if (!isNaN(d.getTime())) return d;
+    }
   }
 
-  // Handle DD/MM/YYYY or DD-MM-YYYY
-  const dmyMatch = cleaned.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
-  if (dmyMatch) {
-    const day = parseInt(dmyMatch[1], 10);
-    const month = parseInt(dmyMatch[2], 10) - 1;
-    const year = parseInt(dmyMatch[3], 10);
-    const d = new Date(year, month, day);
+  // Handle YYYY-MM-DD or YYYY/MM/DD
+  const ymdMatch = cleaned.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
+  if (ymdMatch) {
+    const year = parseInt(ymdMatch[1], 10);
+    const month = parseInt(ymdMatch[2], 10) - 1;
+    const day = parseInt(ymdMatch[3], 10);
+    const d = new Date(Date.UTC(year, month, day));
     if (!isNaN(d.getTime())) return d;
+  }
+
+  const parsed = new Date(cleaned);
+  if (!isNaN(parsed.getTime()) && parsed.getFullYear() >= 2020 && parsed.getFullYear() <= 2035) {
+    return parsed;
   }
 
   return null;

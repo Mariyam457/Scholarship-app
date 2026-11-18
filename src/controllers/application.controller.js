@@ -17,11 +17,15 @@ export async function getUserApplications(req, res, next) {
   try {
     const applications = await ApplicationTrackerModel.find({ userId: req.user.id })
       .sort({ deadline: 1 })
-      .populate('scholarshipId', 'title provider hostCountries fundingType sourceAttribution verificationStatus slug');
+      .populate('scholarshipId', 'title provider hostCountries fundingType sourceAttribution verificationStatus slug isActive linkHealth');
+
+    const visibleApplications = applications.filter(
+      (app) => app.scholarshipId && app.scholarshipId.isActive !== false && !app.scholarshipId.linkHealth?.isBroken
+    );
 
     res.json({
       success: true,
-      data: { applications },
+      data: { applications: visibleApplications },
     });
   } catch (error) {
     next(error);
@@ -39,8 +43,8 @@ export async function trackScholarship(req, res, next) {
     if (!scholarship) {
       scholarship = await ScholarshipModel.findOne({ slug: scholarshipId });
     }
-    if (!scholarship) {
-      return next(ApiError.notFound('Scholarship not found'));
+    if (!scholarship || !scholarship.isActive || scholarship.linkHealth?.isBroken) {
+      return next(ApiError.notFound('Scholarship not found or temporarily unavailable'));
     }
 
     const existing = await ApplicationTrackerModel.findOne({

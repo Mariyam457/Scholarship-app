@@ -90,6 +90,13 @@ const ScholarshipSchema = new mongoose.Schema(
       confidenceScore: { type: Number, min: 0, max: 100, default: 100 },
       sourceSnapshotHash: { type: String },
     },
+    linkHealth: {
+      isBroken: { type: Boolean, default: false, index: true },
+      lastCheckedAt: { type: Date },
+      statusCode: { type: Number },
+      brokenReason: { type: String },
+      checkedUrl: { type: String },
+    },
     verificationStatus: {
       type: String,
       enum: Object.values(VerificationStatus),
@@ -108,7 +115,7 @@ const ScholarshipSchema = new mongoose.Schema(
 );
 
 // Indexes for fast searching and multi-attribute filters
-ScholarshipSchema.index({ isActive: 1, verificationStatus: 1, 'deadlines.applicationDeadline': 1 });
+ScholarshipSchema.index({ isActive: 1, 'linkHealth.isBroken': 1, verificationStatus: 1, 'deadlines.applicationDeadline': 1 });
 ScholarshipSchema.index({ hostCountries: 1, fundingType: 1 });
 ScholarshipSchema.index({ degreeLevels: 1, fundingType: 1 });
 ScholarshipSchema.index(

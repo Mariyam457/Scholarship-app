@@ -1,11 +1,29 @@
 import { ChangeCategory, Severity } from '../constants/enums.js';
 
-export function detectScholarshipDiffs(existingScholarship, crawledSnapshot) {
+const NOISY_BOT_OR_ERROR_TITLES =
+  /^(just a moment|access denied|attention required|403 forbidden|404|page not found|error|security check|please wait|robot check|cloudflare)/i;
+
+export function detectScholarshipDiffs(existingScholarship, crawledSnapshot, linkResult = null) {
   const changes = [];
   let highestSeverity = Severity.INFO;
   let confidenceScore = 90;
 
-  const extracted = crawledSnapshot.extractedData || {};
+  const extracted = crawledSnapshot?.extractedData || {};
+
+  // 0. Broken / Inaccurate Link Detection
+  const effectiveLink = linkResult || crawledSnapshot?.linkCheck;
+  if (effectiveLink?.isBroken) {
+    changes.push({
+      field: 'sourceAttribution.applicationUrl',
+      oldValue: effectiveLink.checkedUrl || existingScholarship.sourceAttribution?.applicationUrl,
+      newValue: 'NEEDS_UPDATED_URL',
+      category: ChangeCategory.LINK_BROKEN,
+      severity: Severity.CRITICAL,
+      description: `Inaccurate/Broken Link Detected (${effectiveLink.brokenReason || 'Unreachable'}). Scholarship automatically hidden from student app until link is corrected.`,
+    });
+    highestSeverity = Severity.CRITICAL;
+    confidenceScore = 98;
+  }
 
   // 1. Deadline Comparison
   if (extracted.parsedDeadline && existingScholarship.deadlines?.applicationDeadline) {
@@ -28,30 +46,58 @@ export function detectScholarshipDiffs(existingScholarship, crawledSnapshot) {
     }
   }
 
-  // 2. Title Comparison
-  if (extracted.title && existingScholarship.title) {
-    const cleanOld = existingScholarship.title.trim().toLowerCase();
-    const cleanNew = extracted.title.trim().toLowerCase();
-    if (cleanOld !== cleanNew && cleanNew.length > 5) {
+  // 2. Intake Closed Detection (page announces closed while DB deadline is still future and not rolling)
+  if (
+    extracted.intakeStatus?.status === 'closed' &&
+    existingScholarship.deadlines?.applicationDeadline &&
+    !existingScholarship.deadlines?.isRolling
+  ) {
+    const existingDate = new Date(existingScholarship.deadlines.applicationDeadline);
+    if (existingDate.getTime() > Date.now()) {
       changes.push({
-        field: 'title',
-        oldValue: existingScholarship.title,
-        newValue: extracted.title,
-        category: ChangeCategory.CONTENT_UPDATE,
-        severity: Severity.MEDIUM,
-        description: `Official title updated: "${extracted.title}"`,
+        field: 'verificationStatus',
+        oldValue: existingScholarship.verificationStatus || 'verified',
+        newValue: 'needs_review',
+        category: ChangeCategory.SCHOLARSHIP_CLOSED,
+        severity: Severity.HIGH,
+        description: `Official portal indicates intake is closed ("${extracted.intakeStatus.indicatorText}"), though listed deadline is ${existingDate.toISOString().split('T')[0]}`,
       });
       if (highestSeverity !== Severity.CRITICAL) {
-        highestSeverity = Severity.MEDIUM;
+        highestSeverity = Severity.HIGH;
+      }
+      confidenceScore = Math.max(confidenceScore, 92);
+    }
+  }
+
+  // 3. Title Comparison (ignore WAF/bot/error page titles)
+  if (extracted.title && existingScholarship.title && !effectiveLink?.isBroken) {
+    const cleanOld = existingScholarship.title.trim().toLowerCase();
+    const cleanNew = extracted.title.trim().toLowerCase();
+    const isNoisy = NOISY_BOT_OR_ERROR_TITLES.test(cleanNew);
+    if (!isNoisy && cleanOld !== cleanNew && cleanNew.length > 8 && cleanNew.length < 180) {
+      // Only flag title change if it doesn't already contain the existing title or vice versa as minor suffix noise
+      const minorMatch = cleanNew.includes(cleanOld) || cleanOld.includes(cleanNew);
+      if (!minorMatch) {
+        changes.push({
+          field: 'title',
+          oldValue: existingScholarship.title,
+          newValue: extracted.title.trim(),
+          category: ChangeCategory.CONTENT_UPDATE,
+          severity: Severity.MEDIUM,
+          description: `Official title updated: "${extracted.title.trim()}"`,
+        });
+        if (highestSeverity !== Severity.CRITICAL && highestSeverity !== Severity.HIGH) {
+          highestSeverity = Severity.MEDIUM;
+        }
       }
     }
   }
 
-  // 3. Funding Amount Comparison
+  // 4. Funding Amount Comparison
   if (extracted.parsedFunding?.amount && existingScholarship.fundingBreakdown?.livingStipend?.amount) {
     const oldAmount = existingScholarship.fundingBreakdown.livingStipend.amount;
     const newAmount = extracted.parsedFunding.amount;
-    if (oldAmount !== newAmount) {
+    if (oldAmount !== newAmount && newAmount >= 50) {
       changes.push({
         field: 'fundingBreakdown.livingStipend.amount',
         oldValue: oldAmount,

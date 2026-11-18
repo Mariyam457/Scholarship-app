@@ -1,11 +1,10 @@
-import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase } from '../config/database.js';
 import { SourceRegistryModel } from '../models/SourceRegistry.js';
 import { ScholarshipModel } from '../models/Scholarship.js';
 import { ReviewQueueModel } from '../models/ReviewQueue.js';
-import { crawlSource } from './crawler.js';
+import { crawlSource, verifyScholarshipLinks } from './crawler.js';
 import { detectScholarshipDiffs } from './diff-detector.js';
-import { AutomationState, ReviewStatus, Severity } from '../constants/enums.js';
+import { AutomationState, ChangeCategory, ReviewStatus } from '../constants/enums.js';
 import { logger } from '../config/logger.js';
 import { env } from '../config/env.js';
 
@@ -13,37 +12,53 @@ let schedulerInterval = null;
 let isCycleRunning = false;
 
 /**
- * Crawl a single source, detect differences against existing scholarships,
+ * Crawl a single source, verify all associated scholarship links,
+ * automatically hide scholarships with inaccurate/broken links from the student app,
  * and enqueue any detected changes into the ReviewQueue for Admin approval.
  */
 export async function processSource(source) {
   logger.info(`[SCHEDULER] Checking source: ${source.name} (${source.organization})`);
 
-  let crawlResult;
+  let crawlResult = null;
+  let crawlError = null;
+
   try {
     crawlResult = await crawlSource(source);
 
     // Update healthy metrics
     source.health.totalChecks = (source.health.totalChecks || 0) + 1;
-    source.health.successfulChecks = (source.health.successfulChecks || 0) + 1;
-    source.health.consecutiveFailures = 0;
+    if (!crawlResult.linkCheck?.isBroken) {
+      source.health.successfulChecks = (source.health.successfulChecks || 0) + 1;
+      source.health.consecutiveFailures = 0;
+      source.health.lastErrorMessage = '';
+      if (source.automationState === AutomationState.QUARANTINED) {
+        source.automationState = AutomationState.ACTIVE;
+      }
+      source.lastSuccessfulCheckAt = new Date();
+    } else {
+      source.health.consecutiveFailures = (source.health.consecutiveFailures || 0) + 1;
+      source.health.lastErrorMessage = crawlResult.linkCheck.brokenReason;
+    }
+
     source.health.lastStatusCode = crawlResult.httpStatus;
     source.health.lastDurationMs = crawlResult.durationMs;
     source.health.uptimePercentage = Math.round(
-      (source.health.successfulChecks / source.health.totalChecks) * 100
+      ((source.health.successfulChecks || 0) / source.health.totalChecks) * 100
     );
     source.lastCheckedAt = new Date();
-    source.lastSuccessfulCheckAt = new Date();
     source.lastContentHash = crawlResult.contentHash;
     await source.save();
 
-    logger.info(`[SCHEDULER] ✅ Crawled ${source.name} successfully (status ${crawlResult.httpStatus})`);
+    logger.info(
+      `[SCHEDULER] ✅ Crawled ${source.name} (HTTP ${crawlResult.httpStatus}${crawlResult.linkCheck?.isBroken ? ' — BROKEN LINK' : ''})`
+    );
   } catch (crawlErr) {
+    crawlError = crawlErr;
     source.health.totalChecks = (source.health.totalChecks || 0) + 1;
     source.health.consecutiveFailures = (source.health.consecutiveFailures || 0) + 1;
     source.health.lastErrorMessage = crawlErr.message;
     source.health.uptimePercentage = Math.round(
-      (source.health.successfulChecks / source.health.totalChecks) * 100
+      ((source.health.successfulChecks || 0) / source.health.totalChecks) * 100
     );
     source.lastCheckedAt = new Date();
 
@@ -56,25 +71,68 @@ export async function processSource(source) {
 
     await source.save();
     logger.error(`[SCHEDULER] ❌ Crawl failed for ${source.name}: ${crawlErr.message}`);
-    return { success: false, error: crawlErr.message };
   }
 
-  // Find scholarships tied to this source
+  // Evaluate all active scholarships tied to this source (even if previously hidden for broken link)
   const associatedScholarships = await ScholarshipModel.find({
     'sourceAttribution.sourceId': source._id,
     isActive: true,
   });
 
   let enqueuedCount = 0;
+  let brokenCount = 0;
+  let restoredCount = 0;
 
   for (const scholarship of associatedScholarships) {
-    const diffResult = detectScholarshipDiffs(scholarship, crawlResult);
+    const appUrl = scholarship.sourceAttribution?.applicationUrl?.trim();
+    const officialUrl = scholarship.sourceAttribution?.officialSourceUrl?.trim();
+    const sourceUrl = (source.targetScholarshipUrl || source.officialUrl || '').trim();
+
+    let linkResult;
+    if (crawlResult?.linkCheck && appUrl === sourceUrl && (!officialUrl || officialUrl === sourceUrl)) {
+      linkResult = crawlResult.linkCheck;
+    } else {
+      linkResult = await verifyScholarshipLinks(scholarship);
+    }
+
+    const wasBroken = Boolean(scholarship.linkHealth?.isBroken);
+
+    if (linkResult?.isBroken) {
+      brokenCount++;
+      scholarship.linkHealth = {
+        isBroken: true,
+        lastCheckedAt: new Date(),
+        statusCode: linkResult.statusCode || 0,
+        brokenReason: linkResult.brokenReason || 'Inaccurate or unreachable URL',
+        checkedUrl: linkResult.checkedUrl || appUrl || officialUrl,
+      };
+      await scholarship.save();
+      logger.warn(
+        `[SCHEDULER] 🚫 Hidden "${scholarship.title}" from student mobile app due to inaccurate link: ${scholarship.linkHealth.brokenReason}`
+      );
+    } else if (linkResult && !linkResult.transientError) {
+      if (wasBroken) {
+        restoredCount++;
+        logger.info(`[SCHEDULER] ✅ Link verified live again — restored "${scholarship.title}" to student mobile app.`);
+      }
+      scholarship.linkHealth = {
+        isBroken: false,
+        lastCheckedAt: new Date(),
+        statusCode: linkResult.statusCode || 200,
+        brokenReason: '',
+        checkedUrl: linkResult.checkedUrl || appUrl || officialUrl,
+      };
+      await scholarship.save();
+    }
+
+    const diffResult = detectScholarshipDiffs(scholarship, crawlResult, linkResult);
 
     if (diffResult.hasChanges) {
-      // Check if there is already a pending review for this scholarship to avoid duplicate spam
+      const primaryCategory = diffResult.changes[0].category;
       const existingQueue = await ReviewQueueModel.findOne({
         scholarshipId: scholarship._id,
         status: ReviewStatus.PENDING,
+        ...(primaryCategory === ChangeCategory.LINK_BROKEN ? { category: ChangeCategory.LINK_BROKEN } : {}),
       });
 
       if (!existingQueue) {
@@ -83,16 +141,16 @@ export async function processSource(source) {
           sourceName: source.name,
           scholarshipId: scholarship._id,
           scholarshipTitle: scholarship.title,
-          category: diffResult.changes[0].category,
+          category: primaryCategory,
           severity: diffResult.severity,
-          status: ReviewStatus.PENDING, // Awaiting admin permission/approval
+          status: ReviewStatus.PENDING,
           proposedChanges: diffResult.changes.map((c) => ({
             field: c.field,
             oldValue: c.oldValue,
             newValue: c.newValue,
           })),
           diffSnippet: diffResult.changes.map((c) => c.description).join('; '),
-          evidenceUrl: source.targetScholarshipUrl || source.officialUrl,
+          evidenceUrl: linkResult?.checkedUrl || source.targetScholarshipUrl || source.officialUrl,
           confidenceScore: diffResult.confidenceScore,
         });
 
@@ -104,49 +162,93 @@ export async function processSource(source) {
     }
   }
 
-  return { success: true, enqueuedCount };
+  return {
+    success: !crawlError,
+    error: crawlError?.message,
+    httpStatus: crawlResult?.httpStatus || 0,
+    durationMs: crawlResult?.durationMs || 0,
+    enqueuedCount,
+    brokenCount,
+    restoredCount,
+  };
 }
 
 /**
- * Execute one full check cycle across all active sources that are due
+ * Execute one full check cycle across all active sources that are due (or all when forceAll=true)
  */
-export async function runSchedulerCycle() {
+export async function runSchedulerCycle({ forceAll = false } = {}) {
   if (isCycleRunning) {
     logger.warn('[SCHEDULER] Previous cycle is still running. Skipping trigger.');
-    return;
+    return { skipped: true };
   }
 
   isCycleRunning = true;
   const cycleStart = Date.now();
   logger.info('====================================================');
-  logger.info('[SCHEDULER] ⏱️ Starting Automated Source Monitoring Cycle...');
+  logger.info(`[SCHEDULER] ⏱️ Starting ${forceAll ? 'FULL ON-DEMAND' : 'Automated'} Source Monitoring & Link Audit Cycle...`);
   logger.info('====================================================');
 
+  let checkedCount = 0;
+  let totalEnqueued = 0;
+  let totalBroken = 0;
+  let totalRestored = 0;
+
   try {
-    const activeSources = await SourceRegistryModel.find({
-      automationState: AutomationState.ACTIVE,
-    });
+    const query = forceAll ? {} : { automationState: AutomationState.ACTIVE };
+    const activeSources = await SourceRegistryModel.find(query);
 
     const now = Date.now();
-    const dueSources = activeSources.filter((source) => {
-      if (!source.lastCheckedAt) return true;
-      const intervalMs = (source.checkIntervalMinutes || env.SOURCE_CHECK_INTERVAL_MINUTES || 1440) * 60 * 1000;
-      return now - new Date(source.lastCheckedAt).getTime() >= intervalMs;
-    });
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
 
-    logger.info(`[SCHEDULER] Found ${activeSources.length} active sources (${dueSources.length} due for check).`);
+    // Preload urgent source IDs (deadlines within 30 days get 6h cadence instead of 24h)
+    const urgentScholarships = await ScholarshipModel.find({
+      isActive: true,
+      'deadlines.applicationDeadline': { $gte: new Date(), $lte: new Date(now + thirtyDaysMs) },
+    }).select('sourceAttribution.sourceId');
+    const urgentSourceIds = new Set(
+      urgentScholarships.map((s) => s.sourceAttribution?.sourceId?.toString()).filter(Boolean)
+    );
 
-    // Process due sources with controlled concurrency
-    const concurrency = env.WORKER_CONCURRENCY || 2;
+    const dueSources = forceAll
+      ? activeSources
+      : activeSources.filter((source) => {
+          if (!source.lastCheckedAt) return true;
+          const isUrgent = urgentSourceIds.has(source._id.toString());
+          const configuredMins = source.checkIntervalMinutes || env.SOURCE_CHECK_INTERVAL_MINUTES || 720;
+          const effectiveMins = isUrgent ? Math.min(configuredMins, 360) : Math.min(configuredMins, 720);
+          return now - new Date(source.lastCheckedAt).getTime() >= effectiveMins * 60 * 1000;
+        });
+
+    logger.info(`[SCHEDULER] Found ${activeSources.length} sources (${dueSources.length} due for check).`);
+
+    const concurrency = env.WORKER_CONCURRENCY || 3;
     for (let i = 0; i < dueSources.length; i += concurrency) {
       const batch = dueSources.slice(i, i + concurrency);
-      await Promise.all(batch.map((src) => processSource(src)));
+      const results = await Promise.all(batch.map((src) => processSource(src)));
+      checkedCount += batch.length;
+      for (const r of results) {
+        totalEnqueued += r.enqueuedCount || 0;
+        totalBroken += r.brokenCount || 0;
+        totalRestored += r.restoredCount || 0;
+      }
     }
 
     const durationSec = Math.round((Date.now() - cycleStart) / 1000);
-    logger.info(`[SCHEDULER] ✨ Cycle complete in ${durationSec}s. Checked ${dueSources.length} sources.`);
+    logger.info(
+      `[SCHEDULER] ✨ Cycle complete in ${durationSec}s. Checked ${checkedCount} sources | Queued: ${totalEnqueued} | Broken/Hidden: ${totalBroken} | Restored: ${totalRestored}.`
+    );
+
+    return {
+      skipped: false,
+      checkedCount,
+      totalEnqueued,
+      totalBroken,
+      totalRestored,
+      durationSec,
+    };
   } catch (err) {
     logger.error('[SCHEDULER] Error during monitoring cycle:', err);
+    throw err;
   } finally {
     isCycleRunning = false;
   }
@@ -155,21 +257,21 @@ export async function runSchedulerCycle() {
 /**
  * Start the background scheduler
  * @param {Object} options
- * @param {number} [options.intervalMs] - Check interval in ms (default: every 15 minutes)
+ * @param {number} [options.intervalMs] - Tick interval in ms (default: every 10 minutes)
  * @param {boolean} [options.runImmediately] - Run a cycle immediately on start
  */
-export function startMonitorScheduler({ intervalMs = 15 * 60 * 1000, runImmediately = true } = {}) {
+export function startMonitorScheduler({ intervalMs = 10 * 60 * 1000, runImmediately = true } = {}) {
   if (schedulerInterval) {
     logger.warn('[SCHEDULER] Monitor Scheduler is already active.');
     return schedulerInterval;
   }
 
-  logger.info(`🚀 [SCHEDULER] Initializing 24/7 Official Source Monitor (Tick interval: ${Math.round(intervalMs / 60000)}m)`);
+  logger.info(`🚀 [SCHEDULER] Initializing 24/7 Active Official Source & Link Monitor (Tick interval: ${Math.round(intervalMs / 60000)}m)`);
 
   if (runImmediately) {
     setTimeout(() => {
       runSchedulerCycle().catch((err) => logger.error('[SCHEDULER] Initial cycle error:', err));
-    }, 5000); // 5s initial delay for clean startup
+    }, 5000);
   }
 
   schedulerInterval = setInterval(() => {

@@ -20,7 +20,7 @@ import { UserRole } from '../constants/enums.js';
 const router = Router();
 
 // Public routes
-router.get('/', validateQuery(scholarshipFilterSchema), listScholarships);
+router.get('/', optionalAuth, validateQuery(scholarshipFilterSchema), listScholarships);
 router.get('/slug/:slug', optionalAuth, getScholarshipBySlug);
 router.get('/:id', optionalAuth, getScholarshipById);
 

@@ -6,6 +6,7 @@ import {
   updateSource,
   testSource,
   triggerCrawl,
+  triggerCrawlAll,
 } from '../controllers/source.controller.js';
 import { authenticate, requireRole } from '../middleware/auth.middleware.js';
 import { validateBody } from '../middleware/validate.middleware.js';
@@ -22,8 +23,9 @@ router.get('/:id', getSourceById);
 router.use(authenticate, requireRole(UserRole.ADMIN));
 
 router.post('/', validateBody(createSourceSchema), createSource);
-router.patch('/:id', validateBody(updateSourceSchema), updateSource);
+router.post('/crawl-all', triggerCrawlAll);
 router.post('/test', testSource);
+router.patch('/:id', validateBody(updateSourceSchema), updateSource);
 router.post('/:id/crawl', triggerCrawl);
 
 export default router;

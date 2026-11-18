@@ -6,6 +6,7 @@ import { parseFlexibleDate, getDaysUntilDeadline } from '../src/utils/date.utils
 import { parseCurrencyString } from '../src/utils/currency.utils.js';
 import { getCountryIsoCode, getCountryFlagEmoji } from '../src/utils/country.utils.js';
 import { slugify, cleanHtml } from '../src/utils/text.utils.js';
+import { detectScholarshipDiffs } from '../src/worker/diff-detector.js';
 
 test('SSRF Guard: Blocks private IP addresses and metadata endpoints', () => {
   const blockedUrls = [
@@ -97,4 +98,43 @@ test('Currency & Text Utils: Parses amounts and formats properly', () => {
   assert.equal(cleanHtml('<p>Hello <b>World</b> &amp; students!</p>'), 'Hello World & students!');
   assert.equal(getCountryIsoCode('germany'), 'DE');
   assert.equal(getCountryFlagEmoji('DE'), '🇩🇪');
+});
+
+test('Crawler Diff Detector & Date Parser: Flags broken links, ignores bot titles, parses ordinal dates', () => {
+  const ordDate = parseFlexibleDate('15th October 2026');
+  assert.ok(ordDate instanceof Date);
+  assert.equal(ordDate.getFullYear(), 2026);
+  assert.equal(ordDate.getMonth(), 9);
+  assert.equal(ordDate.getDate(), 15);
+
+  const dotDate = parseFlexibleDate('31.12.2026');
+  assert.ok(dotDate instanceof Date);
+  assert.equal(dotDate.getUTCFullYear(), 2026);
+  assert.equal(dotDate.getUTCMonth(), 11);
+  assert.equal(dotDate.getUTCDate(), 31);
+
+  const scholarship = {
+    title: 'Chevening Scholarship 2026',
+    deadlines: { applicationDeadline: new Date('2026-11-05'), isRolling: false },
+    sourceAttribution: { applicationUrl: 'https://www.chevening.org/apply' },
+  };
+
+  // Should ignore Cloudflare / WAF noisy titles
+  const wafSnapshot = {
+    extractedData: { title: 'Just a moment...' },
+    linkCheck: { isBroken: false, statusCode: 403 },
+  };
+  const wafDiff = detectScholarshipDiffs(scholarship, wafSnapshot);
+  assert.equal(wafDiff.hasChanges, false);
+
+  // Should detect broken link with critical severity
+  const brokenLinkDiff = detectScholarshipDiffs(scholarship, wafSnapshot, {
+    isBroken: true,
+    checkedUrl: 'https://www.chevening.org/apply',
+    statusCode: 404,
+    brokenReason: 'Official URL returned HTTP 404',
+  });
+  assert.equal(brokenLinkDiff.hasChanges, true);
+  assert.equal(brokenLinkDiff.severity, 'critical');
+  assert.equal(brokenLinkDiff.changes[0].category, 'link_broken');
 });

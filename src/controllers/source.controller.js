@@ -1,12 +1,10 @@
 import { SourceRegistryModel } from '../models/SourceRegistry.js';
 import { ScholarshipModel } from '../models/Scholarship.js';
-import { ReviewQueueModel } from '../models/ReviewQueue.js';
 import { ApiError } from '../utils/api-error.js';
 import { slugify } from '../utils/text.utils.js';
 import { crawlSource } from '../worker/crawler.js';
-import { detectScholarshipDiffs } from '../worker/diff-detector.js';
+import { processSource, runSchedulerCycle } from '../worker/monitor-scheduler.js';
 import { logAuditEvent } from '../services/audit.service.js';
-import { AutomationState, ReviewStatus, Severity } from '../constants/enums.js';
 
 export async function listSources(req, res, next) {
   try {
@@ -148,97 +146,50 @@ export async function triggerCrawl(req, res, next) {
       return next(ApiError.notFound('Source not found'));
     }
 
-    let crawlResult;
-    try {
-      crawlResult = await crawlSource(source);
-
-      // Update success health metrics
-      source.health.totalChecks += 1;
-      source.health.successfulChecks += 1;
-      source.health.consecutiveFailures = 0;
-      source.health.lastStatusCode = crawlResult.httpStatus;
-      source.health.lastDurationMs = crawlResult.durationMs;
-      source.health.uptimePercentage = Math.round(
-        (source.health.successfulChecks / source.health.totalChecks) * 100
-      );
-      source.lastCheckedAt = new Date();
-      source.lastSuccessfulCheckAt = new Date();
-      source.lastContentHash = crawlResult.contentHash;
-    } catch (crawlErr) {
-      // Update failure health metrics
-      source.health.totalChecks += 1;
-      source.health.consecutiveFailures += 1;
-      source.health.lastErrorMessage = crawlErr.message;
-      source.health.uptimePercentage = Math.round(
-        (source.health.successfulChecks / source.health.totalChecks) * 100
-      );
-      source.lastCheckedAt = new Date();
-
-      if (source.health.consecutiveFailures >= 3) {
-        source.automationState = AutomationState.QUARANTINED;
-        source.health.quarantinedAt = new Date();
-        source.health.quarantineReason = `3 consecutive crawl failures: ${crawlErr.message}`;
-      }
-
-      await source.save();
-      return next(ApiError.badRequest(`Crawl execution failed: ${crawlErr.message}`));
-    }
-
-    await source.save();
-
-    // Check diff against associated scholarships
-    const associatedScholarships = await ScholarshipModel.find({
-      'sourceAttribution.sourceId': source._id,
-      isActive: true,
-    });
-
-    let detectedChangesCount = 0;
-    const enqueuedItems = [];
-
-    for (const scholarship of associatedScholarships) {
-      const diffResult = detectScholarshipDiffs(scholarship, crawlResult);
-      if (diffResult.hasChanges) {
-        detectedChangesCount += diffResult.changes.length;
-
-        // Check if pending queue item already exists
-        const existingQueue = await ReviewQueueModel.findOne({
-          scholarshipId: scholarship._id,
-          status: ReviewStatus.PENDING,
-        });
-
-        if (!existingQueue) {
-          const queueItem = await ReviewQueueModel.create({
-            sourceId: source._id,
-            sourceName: source.name,
-            scholarshipId: scholarship._id,
-            scholarshipTitle: scholarship.title,
-            category: diffResult.changes[0].category,
-            severity: diffResult.severity,
-            status: ReviewStatus.PENDING,
-            proposedChanges: diffResult.changes.map((c) => ({
-              field: c.field,
-              oldValue: c.oldValue,
-              newValue: c.newValue,
-            })),
-            diffSnippet: diffResult.changes.map((c) => c.description).join('; '),
-            evidenceUrl: source.targetScholarshipUrl,
-            confidenceScore: diffResult.confidenceScore,
-          });
-          enqueuedItems.push(queueItem);
-        }
-      }
+    const result = await processSource(source);
+    if (!result.success) {
+      return next(ApiError.badRequest(`Crawl execution failed: ${result.error}`));
     }
 
     res.json({
       success: true,
       message: `Crawl completed for ${source.name}.`,
       data: {
-        httpStatus: crawlResult.httpStatus,
-        durationMs: crawlResult.durationMs,
-        detectedChangesCount,
-        enqueuedReviewItemsCount: enqueuedItems.length,
-        enqueuedItems,
+        httpStatus: result.httpStatus,
+        durationMs: result.durationMs,
+        enqueuedReviewItemsCount: result.enqueuedCount,
+        brokenLinksHiddenCount: result.brokenCount,
+        restoredLinksCount: result.restoredCount,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function triggerCrawlAll(req, res, next) {
+  try {
+    const summary = await runSchedulerCycle({ forceAll: true });
+    if (summary?.skipped) {
+      return next(ApiError.badRequest('A crawl audit cycle is already running. Please wait a moment and try again.'));
+    }
+
+    await logAuditEvent({
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      actorRole: req.user.role,
+      action: 'SOURCE_CRAWL_ALL',
+      entityType: 'SourceRegistry',
+      entityId: 'all',
+      changes: summary,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    res.json({
+      success: true,
+      message: `Full link audit & crawl complete across ${summary.checkedCount} sources.`,
+      data: summary,
     });
   } catch (error) {
     next(error);

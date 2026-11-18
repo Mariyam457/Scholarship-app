@@ -6,6 +6,8 @@ import { FundingType, VerificationStatus, ReviewStatus } from '../constants/enum
 
 export async function getPlatformStats(req, res, next) {
   try {
+    const visibleFilter = { isActive: true, 'linkHealth.isBroken': { $ne: true } };
+
     const [
       totalScholarships,
       fullyFundedCount,
@@ -13,17 +15,19 @@ export async function getPlatformStats(req, res, next) {
       totalSources,
       activeSources,
       pendingReviewsCount,
+      brokenLinksCount,
       totalUsers,
       recentlyVerified,
     ] = await Promise.all([
-      ScholarshipModel.countDocuments({ isActive: true }),
-      ScholarshipModel.countDocuments({ isActive: true, fundingType: FundingType.FULL_FUNDING }),
-      ScholarshipModel.distinct('hostCountries', { isActive: true }),
+      ScholarshipModel.countDocuments(visibleFilter),
+      ScholarshipModel.countDocuments({ ...visibleFilter, fundingType: FundingType.FULL_FUNDING }),
+      ScholarshipModel.distinct('hostCountries', visibleFilter),
       SourceRegistryModel.countDocuments(),
       SourceRegistryModel.countDocuments({ automationState: 'active' }),
       ReviewQueueModel.countDocuments({ status: ReviewStatus.PENDING }),
+      ScholarshipModel.countDocuments({ isActive: true, 'linkHealth.isBroken': true }),
       UserModel.countDocuments(),
-      ScholarshipModel.find({ isActive: true })
+      ScholarshipModel.find(visibleFilter)
         .sort({ 'sourceAttribution.lastVerifiedAt': -1 })
         .limit(5)
         .select('title provider hostCountries deadlines verificationStatus sourceAttribution slug'),
@@ -39,6 +43,7 @@ export async function getPlatformStats(req, res, next) {
         totalSources,
         activeSources,
         pendingReviewsCount,
+        brokenLinksCount,
         totalUsers,
         recentlyVerified,
       },

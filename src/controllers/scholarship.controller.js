@@ -4,6 +4,8 @@ import { ApiError } from '../utils/api-error.js';
 import { slugify } from '../utils/text.utils.js';
 import { calculateMatchScore } from '../services/eligibility-matcher.service.js';
 import { logAuditEvent } from '../services/audit.service.js';
+import { verifyScholarshipLinks } from '../worker/crawler.js';
+import { UserRole } from '../constants/enums.js';
 
 export async function listScholarships(req, res, next) {
   try {
@@ -19,6 +21,7 @@ export async function listScholarships(req, res, next) {
       deadlineAfter,
       verificationStatus,
       isRolling,
+      includeBroken,
       page = 1,
       limit = 20,
       sortBy = 'deadline',
@@ -26,6 +29,10 @@ export async function listScholarships(req, res, next) {
     } = req.query;
 
     const query = { isActive: true };
+    const isAdminViewingBroken = req.user?.role === UserRole.ADMIN && (includeBroken === true || includeBroken === 'true');
+    if (!isAdminViewingBroken) {
+      query['linkHealth.isBroken'] = { $ne: true };
+    }
 
     // Full text search
     if (search && search.trim()) {
@@ -162,8 +169,8 @@ export async function getScholarshipById(req, res, next) {
       'name organization officialUrl automationState health'
     );
 
-    if (!scholarship) {
-      return next(ApiError.notFound('Scholarship not found'));
+    if (!scholarship || !scholarship.isActive || (scholarship.linkHealth?.isBroken && req.user?.role !== UserRole.ADMIN)) {
+      return next(ApiError.notFound('Scholarship not found or temporarily unavailable'));
     }
 
     // Increment view count asynchronously
@@ -186,8 +193,8 @@ export async function getScholarshipBySlug(req, res, next) {
       'name organization officialUrl automationState health'
     );
 
-    if (!scholarship) {
-      return next(ApiError.notFound('Scholarship not found'));
+    if (!scholarship || !scholarship.isActive || (scholarship.linkHealth?.isBroken && req.user?.role !== UserRole.ADMIN)) {
+      return next(ApiError.notFound('Scholarship not found or temporarily unavailable'));
     }
 
     ScholarshipModel.findByIdAndUpdate(scholarship._id, { $inc: { viewCount: 1 } }).exec();
@@ -208,9 +215,10 @@ export async function matchForUser(req, res, next) {
       return next(ApiError.notFound('User not found'));
     }
 
-    // Fetch all active scholarships with upcoming deadlines
+    // Fetch all active scholarships with valid links & upcoming deadlines
     const scholarships = await ScholarshipModel.find({
       isActive: true,
+      'linkHealth.isBroken': { $ne: true },
       'deadlines.applicationDeadline': { $gte: new Date() },
     }).populate('sourceAttribution.sourceId', 'name organization officialUrl');
 
@@ -277,7 +285,19 @@ export async function createScholarship(req, res, next) {
 export async function updateScholarship(req, res, next) {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+
+    // If admin updates source URLs, automatically re-verify link health and restore visibility if valid
+    if (updates.sourceAttribution?.applicationUrl || updates.sourceAttribution?.officialSourceUrl) {
+      const linkCheck = await verifyScholarshipLinks({ sourceAttribution: updates.sourceAttribution });
+      updates.linkHealth = {
+        isBroken: Boolean(linkCheck.isBroken),
+        lastCheckedAt: new Date(),
+        statusCode: linkCheck.statusCode || 200,
+        brokenReason: linkCheck.brokenReason || '',
+        checkedUrl: linkCheck.checkedUrl || updates.sourceAttribution.applicationUrl || updates.sourceAttribution.officialSourceUrl,
+      };
+    }
 
     const scholarship = await ScholarshipModel.findByIdAndUpdate(id, updates, { new: true });
     if (!scholarship) {

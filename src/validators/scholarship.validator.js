@@ -25,6 +25,7 @@ export const scholarshipFilterSchema = z.object({
   deadlineAfter: z.string().optional(),
   verificationStatus: z.nativeEnum(VerificationStatus).optional(),
   isRolling: z.coerce.boolean().optional(),
+  includeBroken: z.coerce.boolean().optional(),
   page: z.coerce.number().min(1).default(1),
   limit: z.coerce.number().min(1).max(100).default(20),
   sortBy: z.enum(['deadline', 'createdAt', 'title', 'confidenceScore']).default('deadline'),
@@ -97,6 +98,14 @@ export const createScholarshipSchema = z.object({
     confidenceScore: z.number().min(0).max(100).default(100),
   }),
   verificationStatus: z.nativeEnum(VerificationStatus).default(VerificationStatus.VERIFIED),
+  linkHealth: z
+    .object({
+      isBroken: z.boolean().optional(),
+      brokenReason: z.string().optional(),
+      statusCode: z.number().optional(),
+      checkedUrl: z.string().optional(),
+    })
+    .optional(),
   isActive: z.boolean().default(true),
   isFeatured: z.boolean().default(false),
   tags: z.array(z.string()).default([]),
