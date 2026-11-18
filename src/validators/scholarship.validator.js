@@ -27,7 +27,7 @@ export const scholarshipFilterSchema = z.object({
   isRolling: z.coerce.boolean().optional(),
   includeBroken: z.coerce.boolean().optional(),
   page: z.coerce.number().min(1).default(1),
-  limit: z.coerce.number().min(1).max(100).default(20),
+  limit: z.coerce.number().min(1).max(500).default(20),
   sortBy: z.enum(['deadline', 'createdAt', 'title', 'confidenceScore']).default('deadline'),
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
 });
@@ -37,7 +37,7 @@ export const createScholarshipSchema = z.object({
   provider: z.string().min(2).max(200).trim(),
   hostCountries: z.array(z.string().min(2).max(10)).min(1),
   description: z.string().min(20),
-  overview: z.string().min(10).max(500),
+  overview: z.string().min(10).max(2000),
   degreeLevels: z.array(z.nativeEnum(DegreeLevel)).min(1),
   fieldsOfStudy: z.array(z.string()).min(1),
   fundingType: z.nativeEnum(FundingType),
@@ -46,13 +46,13 @@ export const createScholarshipSchema = z.object({
     tuitionPercentage: z.number().min(0).max(100).optional(),
     livingStipend: z.object({
       provided: z.boolean(),
-      amount: z.number().optional(),
+      amount: z.number().nullish(),
       currency: z.string().optional(),
       frequency: z.enum(['monthly', 'yearly', 'one_time']).optional(),
     }),
     travelAllowance: z.object({
       flightTicketsProvided: z.boolean(),
-      amount: z.number().optional(),
+      amount: z.number().nullish(),
       currency: z.string().optional(),
     }),
     healthInsurance: z.boolean(),
@@ -61,9 +61,9 @@ export const createScholarshipSchema = z.object({
     notes: z.string().optional(),
   }),
   eligibility: z.object({
-    minGpa: z.number().min(0).max(10).optional(),
-    gpaScale: z.number().min(1).max(100).optional(),
-    maxAge: z.number().min(12).max(100).optional(),
+    minGpa: z.number().min(0).max(10).nullish(),
+    gpaScale: z.number().min(1).max(100).nullish(),
+    maxAge: z.number().min(12).max(100).nullish(),
     eligibleNationalities: z.array(z.string()).min(1),
     ineligibleNationalities: z.array(z.string()).optional(),
     genderRequirement: z.nativeEnum(GenderRequirement).default(GenderRequirement.ALL),
@@ -111,4 +111,4 @@ export const createScholarshipSchema = z.object({
   tags: z.array(z.string()).default([]),
 });
 
-export const updateScholarshipSchema = createScholarshipSchema.partial();
+export const updateScholarshipSchema = createScholarshipSchema.deepPartial();

@@ -285,24 +285,53 @@ export async function createScholarship(req, res, next) {
 export async function updateScholarship(req, res, next) {
   try {
     const { id } = req.params;
+    const existing = await ScholarshipModel.findById(id);
+    if (!existing) {
+      return next(ApiError.notFound('Scholarship not found'));
+    }
+
     const updates = { ...req.body };
 
-    // If admin updates source URLs, automatically re-verify link health and restore visibility if valid
-    if (updates.sourceAttribution?.applicationUrl || updates.sourceAttribution?.officialSourceUrl) {
+    // Merge sourceAttribution with existing fields so partial URL updates preserve sibling metadata
+    if (updates.sourceAttribution) {
+      const existingAttribution = existing.sourceAttribution?.toObject
+        ? existing.sourceAttribution.toObject()
+        : existing.sourceAttribution || {};
+      updates.sourceAttribution = {
+        ...existingAttribution,
+        ...updates.sourceAttribution,
+        lastVerifiedAt: new Date(),
+      };
+    }
+
+    // Honor explicit admin manual override if linkHealth.isBroken === false, otherwise verify updated URLs
+    if (updates.linkHealth && updates.linkHealth.isBroken === false) {
+      updates.linkHealth = {
+        isBroken: false,
+        lastCheckedAt: new Date(),
+        statusCode: 200,
+        brokenReason: '',
+        checkedUrl:
+          updates.sourceAttribution?.applicationUrl ||
+          updates.sourceAttribution?.officialSourceUrl ||
+          existing.sourceAttribution?.applicationUrl ||
+          '',
+      };
+    } else if (updates.sourceAttribution?.applicationUrl || updates.sourceAttribution?.officialSourceUrl) {
       const linkCheck = await verifyScholarshipLinks({ sourceAttribution: updates.sourceAttribution });
       updates.linkHealth = {
         isBroken: Boolean(linkCheck.isBroken),
         lastCheckedAt: new Date(),
         statusCode: linkCheck.statusCode || 200,
         brokenReason: linkCheck.brokenReason || '',
-        checkedUrl: linkCheck.checkedUrl || updates.sourceAttribution.applicationUrl || updates.sourceAttribution.officialSourceUrl,
+        checkedUrl:
+          linkCheck.checkedUrl ||
+          updates.sourceAttribution.applicationUrl ||
+          updates.sourceAttribution.officialSourceUrl,
       };
     }
 
     const scholarship = await ScholarshipModel.findByIdAndUpdate(id, updates, { new: true });
-    if (!scholarship) {
-      return next(ApiError.notFound('Scholarship not found'));
-    }
 
     await logAuditEvent({
       actorId: req.user.id,
