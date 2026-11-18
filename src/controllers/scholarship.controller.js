@@ -29,8 +29,11 @@ export async function listScholarships(req, res, next) {
     } = req.query;
 
     const query = { isActive: true };
-    const isAdminViewingBroken = req.user?.role === UserRole.ADMIN && (includeBroken === true || includeBroken === 'true');
-    if (!isAdminViewingBroken) {
+    const wantsBroken = includeBroken === true || includeBroken === 'true';
+    if (wantsBroken && req.user?.role !== UserRole.ADMIN) {
+      return next(ApiError.unauthorized('Admin authentication required to view hidden broken-link scholarships'));
+    }
+    if (!wantsBroken) {
       query['linkHealth.isBroken'] = { $ne: true };
     }
 
