@@ -46,6 +46,19 @@ const ScholarshipSchema = new mongoose.Schema(
       booksAllowance: { type: Boolean, default: false },
       notes: { type: String },
     },
+    applicationFee: {
+      hasFee: { type: Boolean, default: false, index: true },
+      status: {
+        type: String,
+        enum: ['free', 'waivable', 'paid'],
+        default: 'free',
+        index: true,
+      },
+      amount: { type: Number, default: 0 },
+      currency: { type: String, default: 'USD' },
+      label: { type: String, default: 'No Application Fee ($0)' },
+      notes: { type: String },
+    },
     eligibility: {
       minGpa: { type: Number },
       gpaScale: { type: Number, default: 4.0 },

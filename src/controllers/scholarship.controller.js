@@ -21,6 +21,7 @@ export async function listScholarships(req, res, next) {
       deadlineAfter,
       verificationStatus,
       isRolling,
+      applicationFee,
       includeBroken,
       page = 1,
       limit = 20,
@@ -115,6 +116,10 @@ export async function listScholarships(req, res, next) {
 
     if (typeof isRolling === 'boolean') {
       query['deadlines.isRolling'] = isRolling;
+    }
+
+    if (applicationFee && ['free', 'waivable', 'paid'].includes(String(applicationFee).toLowerCase())) {
+      query['applicationFee.status'] = String(applicationFee).toLowerCase();
     }
 
     // Sorting
